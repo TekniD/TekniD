@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overscroll-behavior-y: contain;
+}
+
+/* Native date/time pickers follow the system theme. */
+:root {
+  color-scheme: light dark;
+}
