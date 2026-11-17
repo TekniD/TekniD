@@ -43,15 +43,46 @@ export async function refreshCache(): Promise<{ clients: number; products: numbe
   return { clients: clients.value.data.length, products: products.value.data.length };
 }
 
-export async function queueJob(job: JobCard): Promise<number> {
-  const id = await db.pending_syncs.add({
-    createdAt: Date.now(),
-    status: "pending",
+/**
+ * Save a job card on the phone without sending it anywhere. Pass an id to
+ * update a saved card that is being edited.
+ */
+export async function saveJob(job: JobCard, id?: number): Promise<number> {
+  const now = Date.now();
+  if (id !== undefined) {
+    await db.pending_syncs.update(id, { job, updatedAt: now, status: "saved", error: undefined });
+    return id;
+  }
+  return (await db.pending_syncs.add({
+    createdAt: now,
+    updatedAt: now,
+    status: "saved",
     job,
     progress: { uploaded: [] },
+  })) as number;
+}
+
+/** Mark saved job cards as submitted and push them to Invoice Ninja (now, or once back online). */
+export async function submitJobs(ids: number[]): Promise<{ synced: number; failed: number }> {
+  const now = Date.now();
+  await db.transaction("rw", db.pending_syncs, async () => {
+    for (const id of ids) {
+      const entry = await db.pending_syncs.get(id);
+      if (entry?.status === "saved") {
+        await db.pending_syncs.update(id, { status: "pending", submittedAt: now, error: undefined });
+      }
+    }
   });
   void requestBackgroundSync();
-  return id as number;
+  return processQueue();
+}
+
+/** Move a failed submission back to Saved so it can be edited, if no invoice was created yet. */
+export async function returnToSaved(id: number): Promise<boolean> {
+  const entry = await db.pending_syncs.get(id);
+  if (!entry || entry.progress.invoiceId || entry.status === "syncing") return false;
+  await db.pending_syncs.update(id, { status: "saved", error: undefined });
+  return true;
 }
 
 /** Signature first, then photos. The index is what progress.uploaded tracks. */

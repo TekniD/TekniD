@@ -4,9 +4,9 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { decimalHours, durationLabel, looksAfterHours, needsSitePhotos, toLocalInputValue } from "@/lib/calc";
 import { db } from "@/lib/db";
-import { processQueue, queueJob } from "@/lib/sync";
+import { saveJob } from "@/lib/sync";
 import { EMPTY_CALLOUT, type TaranaCallout } from "@/lib/tarana";
-import type { CachedClient, JobCard, JobLineItem, JobType, NewClientInput } from "@/lib/types";
+import type { CachedClient, JobCard, JobLineItem, JobType, NewClientInput, PendingSync } from "@/lib/types";
 import { ClientPicker } from "./ClientPicker";
 import { JobTypeChooser } from "./JobTypeChooser";
 import { TaranaDetails } from "./TaranaDetails";
@@ -44,22 +44,40 @@ async function matchClient(name: string): Promise<CachedClient | undefined> {
   );
 }
 
-export function JobCardForm({ onQueued }: { onQueued: (message: string) => void }) {
-  const [jobType, setJobType] = useState<JobType | null>(null);
-  const [callout, setCallout] = useState<TaranaCallout>(EMPTY_CALLOUT);
-  const [client, setClient] = useState<CachedClient | null>(null);
+/** Client object for a saved job, without waiting on the cache. */
+function clientFromJob(job: JobCard): CachedClient | null {
+  if (job.newClient && job.localClientId) return { id: job.localClientId, name: job.clientName, pending: true };
+  return job.clientId ? { id: job.clientId, name: job.clientName } : null;
+}
+
+export function JobCardForm({
+  editing,
+  onSaved,
+  onCancel,
+}: {
+  /** A saved job card to edit. Remount the form (key) when this changes. */
+  editing?: PendingSync;
+  onSaved: (message: string) => void;
+  onCancel?: () => void;
+}) {
+  const init = editing?.job;
+  const [jobType, setJobType] = useState<JobType | null>(init ? (init.jobType ?? "normal") : null);
+  const [callout, setCallout] = useState<TaranaCallout>(init?.tarana ?? EMPTY_CALLOUT);
+  const [client, setClient] = useState<CachedClient | null>(init ? clientFromJob(init) : null);
   // New clients typed in on-device, keyed by their local id.
-  const [newClients, setNewClients] = useState<Record<string, NewClientInput>>({});
+  const [newClients, setNewClients] = useState<Record<string, NewClientInput>>(
+    init?.newClient && init.localClientId ? { [init.localClientId]: init.newClient } : {},
+  );
   const [modal, setModal] = useState<{ name: string } | null>(null);
-  const [timeIn, setTimeIn] = useState(nowRounded);
-  const [timeOut, setTimeOut] = useState("");
-  const [travel, setTravel] = useState("");
-  const [afterHours, setAfterHours] = useState(false);
-  const [items, setItems] = useState<JobLineItem[]>([]);
-  const [notes, setNotes] = useState("");
-  const [wantSignature, setWantSignature] = useState(false);
-  const [signature, setSignature] = useState<string | undefined>();
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [timeIn, setTimeIn] = useState(init?.timeIn ?? nowRounded);
+  const [timeOut, setTimeOut] = useState(init?.timeOut ?? "");
+  const [travel, setTravel] = useState(init?.travelDistance ? String(init.travelDistance) : "");
+  const [afterHours, setAfterHours] = useState(init?.afterHours ?? false);
+  const [items, setItems] = useState<JobLineItem[]>(init?.items ?? []);
+  const [notes, setNotes] = useState(init?.notes ?? "");
+  const [wantSignature, setWantSignature] = useState(Boolean(init?.signature));
+  const [signature, setSignature] = useState<string | undefined>(init?.signature);
+  const [photos, setPhotos] = useState<string[]>(init?.photos ?? []);
   const [errors, setErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -134,15 +152,13 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
 
     setSaving(true);
     try {
-      await queueJob(job);
+      await saveJob(job, editing?.id);
       reset();
-      if (navigator.onLine) {
-        onQueued("Job card saved. Syncing to Invoice Ninja…");
-        const r = await processQueue();
-        onQueued(r.failed ? "Saved, but sync failed. See the queue below." : "Draft invoice created in Invoice Ninja.");
-      } else {
-        onQueued("Saved offline. It will sync when you're back on the VPN.");
-      }
+      onSaved(
+        editing
+          ? "Changes saved."
+          : "Job card saved on this phone. Submit it from Saved when you're ready to invoice.",
+      );
     } catch (err) {
       setErrors([`Could not save: ${err instanceof Error ? err.message : String(err)}`]);
     } finally {
@@ -154,6 +170,16 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
 
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
+      {editing ? (
+        <div className="flex items-center justify-between gap-2 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+          <span>Editing a saved job card</span>
+          {onCancel ? (
+            <button type="button" className="font-semibold" onClick={onCancel}>
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
           {isTarana ? "📡 Tarana call-out" : "🛠️ Normal job"}
@@ -263,12 +289,12 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
 
       <Card title="Sign-off">
         <Toggle checked={wantSignature} onChange={setWantSignature} label="Capture Client Signature" />
-        {wantSignature ? <SignatureField onChange={setSignature} /> : null}
+        {wantSignature ? <SignatureField initial={signature} onChange={setSignature} /> : null}
       </Card>
 
       <div className="sticky bottom-0 -mx-4 border-t border-slate-200 bg-slate-50/95 px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <button type="submit" disabled={saving} className={`${buttonClass} w-full bg-blue-600 text-white`}>
-          {saving ? "Saving…" : "Save job card"}
+          {saving ? "Saving…" : editing ? "Save changes" : "Save job card"}
         </button>
       </div>
 

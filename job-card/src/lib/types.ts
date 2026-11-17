@@ -62,11 +62,14 @@ export interface JobCard {
   photos: string[]; // data:image/jpeg;base64,... (already compressed)
 }
 
-export type SyncStatus = "pending" | "syncing" | "error" | "done";
+/** saved = on the phone only, not submitted yet. The rest are after Submit. */
+export type SyncStatus = "saved" | "pending" | "syncing" | "error" | "done";
 
 export interface PendingSync {
   id?: number;
   createdAt: number;
+  updatedAt?: number;
+  submittedAt?: number;
   status: SyncStatus;
   error?: string;
   job: JobCard;

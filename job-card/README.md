@@ -27,6 +27,9 @@ Built with Next.js 16 (App Router), React 19, Tailwind CSS 4, Dexie (IndexedDB),
   against `STANDARD_LABOR_KEY` or `AFTER_HOURS_LABOR_KEY` (toggle). Travel
   distance > 0 is billed against `TRAVEL_MILEAGE_KEY`. Prices and descriptions
   for these come from the matching Invoice Ninja products.
+- **Save first, submit later:** *Save job card* keeps the card on the phone.
+  The *Saved* tab lists unsent cards to edit, delete or submit (one or all).
+  Only submitted cards go to Invoice Ninja; submitted cards are read-only.
 - **Sync order:** new client first, then the draft invoice, then the signature
   and each photo attached to that invoice. Progress is saved after every step,
   so a dropped connection never creates a duplicate client or invoice.

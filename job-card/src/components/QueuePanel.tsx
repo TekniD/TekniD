@@ -2,8 +2,16 @@
 
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db";
-import { processQueue } from "@/lib/sync";
+import { processQueue, returnToSaved } from "@/lib/sync";
+import type { PendingSync } from "@/lib/types";
 import { Card } from "./ui";
+
+const STATUS_LABEL: Record<string, string> = {
+  pending: "waiting",
+  syncing: "sending",
+  error: "failed",
+  done: "invoiced",
+};
 
 const STATUS_STYLE: Record<string, string> = {
   pending: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200",
@@ -13,14 +21,30 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 /** Shows queued job cards and what happened to each. */
-export function QueuePanel() {
-  const entries = useLiveQuery(() => db.pending_syncs.orderBy("createdAt").reverse().limit(25).toArray(), [], []);
-  if (entries.length === 0) return null;
+export function QueuePanel({ onEdit }: { onEdit: (entry: PendingSync) => void }) {
+  const entries = useLiveQuery(
+    () =>
+      db.pending_syncs
+        .orderBy("createdAt")
+        .reverse()
+        .filter((e) => e.status !== "saved")
+        .limit(50)
+        .toArray(),
+    [],
+    [],
+  );
+  if (entries.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500 dark:border-slate-700">
+        Nothing submitted yet.
+      </div>
+    );
+  }
   const waiting = entries.filter((e) => e.status !== "done").length;
 
   return (
     <Card
-      title={waiting ? `Sync queue (${waiting} waiting)` : "Recent job cards"}
+      title={waiting ? `Submitted (${waiting} still sending)` : "Submitted job cards"}
       right={
         <div className="flex gap-1">
           {waiting ? (
@@ -33,7 +57,7 @@ export function QueuePanel() {
             className="rounded-lg px-3 py-2 text-sm font-medium text-slate-500"
             onClick={() => void db.pending_syncs.where("status").equals("done").delete()}
           >
-            Clear done
+            Clear invoiced
           </button>
         </div>
       }
@@ -49,8 +73,19 @@ export function QueuePanel() {
                 {e.progress.invoiceNumber ? ` · Invoice ${e.progress.invoiceNumber}` : ""}
               </div>
               {e.error ? <div className="mt-1 break-words text-xs text-red-600 dark:text-red-400">{e.error}</div> : null}
+              {e.status === "error" && !e.progress.invoiceId ? (
+                <button
+                  type="button"
+                  className="mt-1 text-xs font-semibold text-blue-700 dark:text-blue-300"
+                  onClick={async () => {
+                    if (await returnToSaved(e.id!)) onEdit({ ...e, status: "saved" });
+                  }}
+                >
+                  Move back to Saved and edit
+                </button>
+              ) : null}
             </div>
-            <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS_STYLE[e.status]}`}>{e.status}</span>
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS_STYLE[e.status]}`}>{STATUS_LABEL[e.status] ?? e.status}</span>
           </li>
         ))}
       </ul>

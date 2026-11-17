@@ -4,7 +4,14 @@ import { useEffect, useRef } from "react";
 import SignatureCanvas from "react-signature-canvas";
 
 /** Signature pad. Emits a Base64 PNG data URL after every stroke, or undefined when cleared. */
-export function SignatureField({ onChange }: { onChange: (dataUrl: string | undefined) => void }) {
+export function SignatureField({
+  initial,
+  onChange,
+}: {
+  /** Existing signature (when editing a saved job card). */
+  initial?: string;
+  onChange: (dataUrl: string | undefined) => void;
+}) {
   const padRef = useRef<SignatureCanvas>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -24,8 +31,17 @@ export function SignatureField({ onChange }: { onChange: (dataUrl: string | unde
       if (data) pad.fromData(data);
     };
     resize();
+    // Draw a previously captured signature back onto the pad.
+    if (initial && padRef.current && wrapRef.current) {
+      void padRef.current.fromDataURL(initial, {
+        width: wrapRef.current.clientWidth,
+        height: wrapRef.current.clientHeight,
+      });
+    }
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
+    // Only on mount: later strokes are reported through onChange.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
