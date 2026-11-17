@@ -8,6 +8,8 @@ import {
   type InvoiceLineItem,
 } from "@/lib/server/invoiceNinja";
 import { errorMessage, json, optionsNotAllowed, rejectCrossOrigin } from "@/lib/server/http";
+import { mapsLink } from "@/lib/geo";
+import { installSummary } from "@/lib/install";
 import { calloutSummary } from "@/lib/tarana";
 import type { JobCard, NewClientInput } from "@/lib/types";
 
@@ -79,7 +81,8 @@ export const OPTIONS = optionsNotAllowed;
 function invoiceFields(clientId: string, job: JobCard, lineItems: InvoiceLineItem[]) {
   const t = job.jobType === "tarana" ? job.tarana : undefined;
   const header = t ? calloutSummary(t) : [];
-  const publicNotes = [header.join("\n"), job.notes ?? ""].filter(Boolean).join("\n\n");
+  const readings = t && job.install ? installSummary(job.taranaWork ?? "fault", job.install) : [];
+  const publicNotes = [header.join("\n"), readings.join("\n"), job.notes ?? ""].filter(Boolean).join("\n\n");
 
   const privateLines = [
     `Job card${t ? " (Tarana call-out)" : ""}: in ${fmt(job.timeIn)}, out ${fmt(job.timeOut)}${
@@ -97,7 +100,15 @@ function invoiceFields(clientId: string, job: JobCard, lineItems: InvoiceLineIte
     ].filter(Boolean);
     privateLines.push(...(extra as string[]));
   }
-  privateLines.push("Captured on the Job Card app.");
+  const gpsLine = (label: string, f?: { lat: number; lng: number; acc: number; at: string }) =>
+    f &&
+    `${label}: ${f.lat}, ${f.lng} (±${f.acc} m) at ${new Date(f.at).toLocaleTimeString("en-ZA", {
+      timeZone: "Africa/Johannesburg",
+      hour: "2-digit",
+      minute: "2-digit",
+    })} ${mapsLink(f)}`;
+  const gps = [gpsLine("Arrived", job.gps?.arrive), gpsLine("Saved", job.gps?.save)].filter(Boolean) as string[];
+  privateLines.push(...gps, "Captured on the Job Card app.");
 
   return {
     client_id: clientId,

@@ -4,6 +4,8 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { decimalHours, durationLabel, looksAfterHours, needsSitePhotos, toLocalInputValue } from "@/lib/calc";
 import { db } from "@/lib/db";
+import { getFix, locationAvailable, type GpsFix } from "@/lib/geo";
+import { EMPTY_INSTALL, TARANA_PHOTO_SLOTS, installProblems, type TaranaInstall, type TaranaWork } from "@/lib/install";
 import { saveJob } from "@/lib/sync";
 import { EMPTY_CALLOUT, type TaranaCallout } from "@/lib/tarana";
 import type { CachedClient, JobCard, JobLineItem, JobType, NewClientInput, PendingSync } from "@/lib/types";
@@ -11,7 +13,9 @@ import { ClientPicker } from "./ClientPicker";
 import { JobTypeChooser } from "./JobTypeChooser";
 import { TaranaDetails } from "./TaranaDetails";
 import { NewClientModal } from "./NewClientModal";
-import { PhotoCapture } from "./PhotoCapture";
+import { GpsStamp } from "./GpsStamp";
+import { OTHER_LABEL, PhotoCapture, type LabelledPhoto } from "./PhotoCapture";
+import { TaranaChecklist } from "./TaranaChecklist";
 import { ProductPicker } from "./ProductPicker";
 import { Card, Field, Toggle, buttonClass, inputClass } from "./ui";
 
@@ -77,7 +81,14 @@ export function JobCardForm({
   const [notes, setNotes] = useState(init?.notes ?? "");
   const [wantSignature, setWantSignature] = useState(Boolean(init?.signature));
   const [signature, setSignature] = useState<string | undefined>(init?.signature);
-  const [photos, setPhotos] = useState<string[]>(init?.photos ?? []);
+  const [photos, setPhotos] = useState<LabelledPhoto[]>(
+    (init?.photos ?? []).map((src, i) => ({ src, label: init?.photoLabels?.[i] || OTHER_LABEL })),
+  );
+  const [taranaWork, setTaranaWork] = useState<TaranaWork>(init?.taranaWork ?? "fault");
+  const [install, setInstall] = useState<TaranaInstall>(init?.install ?? EMPTY_INSTALL);
+  const [gpsArrive, setGpsArrive] = useState<GpsFix | undefined>(init?.gps?.arrive);
+  const [travelNote, setTravelNote] = useState("");
+  const [travelBusy, setTravelBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -99,6 +110,28 @@ export function JobCardForm({
     }
   }
 
+  async function travelFromGps() {
+    setTravelBusy(true);
+    setTravelNote("");
+    try {
+      const fix = gpsArrive ?? (await getFix());
+      if (!gpsArrive) setGpsArrive(fix);
+      const res = await fetch(`/api/distance?lat=${fix.lat}&lng=${fix.lng}`, { cache: "no-store" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      setTravel(String(body.roundTripKm));
+      setTravelNote(
+        body.method === "road"
+          ? `Road distance ${body.oneWayKm} km each way.`
+          : `Estimated ${body.oneWayKm} km each way (router unavailable). Check it.`,
+      );
+    } catch (err) {
+      setTravelNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTravelBusy(false);
+    }
+  }
+
   function reset() {
     setJobType(null);
     setCallout(EMPTY_CALLOUT);
@@ -112,6 +145,10 @@ export function JobCardForm({
     setWantSignature(false);
     setSignature(undefined);
     setPhotos([]);
+    setTaranaWork("fault");
+    setInstall(EMPTY_INSTALL);
+    setGpsArrive(undefined);
+    setTravelNote("");
     setErrors([]);
   }
 
@@ -125,11 +162,17 @@ export function JobCardForm({
     if (distance < 0) problems.push("Travel distance can't be negative");
     if (wantSignature && !signature) problems.push("Capture the client's signature or switch it off");
     if (hours <= 0 && distance <= 0 && items.length === 0) problems.push("Nothing to bill yet");
+    if (isTarana) problems.push(...installProblems(taranaWork, install, photos.map((p) => p.label)));
     setErrors(problems);
     if (problems.length || !client) {
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
+
+    setSaving(true);
+    // Stamp where the card was saved (best effort, never blocks saving).
+    const gpsSave = locationAvailable() ? await getFix(8_000).catch(() => undefined) : undefined;
+    const keptPhotos = showPhotos ? photos : [];
 
     const job: JobCard = {
       jobType: jobType ?? "normal",
@@ -147,10 +190,13 @@ export function JobCardForm({
       notes: notes.trim(),
       signature: wantSignature ? signature : undefined,
       // Photos are only sent while a TAR- product is on the job.
-      photos: showPhotos ? photos : [],
+      photos: keptPhotos.map((p) => p.src),
+      photoLabels: keptPhotos.map((p) => p.label),
+      taranaWork: isTarana ? taranaWork : undefined,
+      install: isTarana ? install : undefined,
+      gps: gpsArrive || gpsSave ? { arrive: gpsArrive, save: gpsSave } : undefined,
     };
 
-    setSaving(true);
     try {
       await saveJob(job, editing?.id);
       reset();
@@ -204,9 +250,41 @@ export function JobCardForm({
       ) : null}
 
       {isTarana ? (
+        <>
         <Card title="Call-out details">
-          <TaranaDetails value={callout} onChange={setCallout} />
+          <TaranaDetails
+            value={callout}
+            onChange={(c) => {
+              setCallout(c);
+              if (/install/i.test(c.typeOfCall) && !/re-?install/i.test(c.typeOfCall)) setTaranaWork("install");
+            }}
+          />
         </Card>
+        <Card title="Tarana checklist">
+          <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800" role="radiogroup" aria-label="Tarana work type">
+            {(
+              [
+                ["install", "New install"],
+                ["fault", "Fault / maintenance"],
+              ] as [TaranaWork, string][]
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={taranaWork === key}
+                onClick={() => setTaranaWork(key)}
+                className={`min-h-11 rounded-lg text-sm font-semibold ${
+                  taranaWork === key ? "bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-slate-100" : "text-slate-600 dark:text-slate-400"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <TaranaChecklist work={taranaWork} value={install} onChange={setInstall} />
+        </Card>
+        </>
       ) : null}
 
       <Card title={isTarana ? "Bill to" : "Client"}>
@@ -232,7 +310,11 @@ export function JobCardForm({
         <Field label="Date & time in">
           <div className="flex gap-2">
             <input className={inputClass} type="datetime-local" value={timeIn} onChange={(e) => setTimeIn(e.target.value)} />
-            <button type="button" className={`${buttonClass} bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-100`} onClick={() => setTimeIn(nowRounded())}>
+            <button type="button" className={`${buttonClass} bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-100`} onClick={() => {
+                setTimeIn(nowRounded());
+                // "Now" on arrival also stamps the arrival location.
+                if (locationAvailable()) void getFix().then(setGpsArrive).catch(() => undefined);
+              }}>
               Now
             </button>
           </div>
@@ -251,6 +333,7 @@ export function JobCardForm({
           label="After-Hours / Weekend Rate"
           description={afterHoursHint ? "Time in looks like after-hours or a weekend" : "Bills labour at the after-hours rate"}
         />
+        <GpsStamp value={gpsArrive} onChange={setGpsArrive} />
       </Card>
 
       <Card title="Travel">
@@ -263,9 +346,23 @@ export function JobCardForm({
             step="any"
             placeholder="0"
             value={travel}
-            onChange={(e) => setTravel(e.target.value)}
+            onChange={(e) => {
+              setTravel(e.target.value);
+              setTravelNote("");
+            }}
           />
         </Field>
+        <button
+          type="button"
+          disabled={travelBusy || !locationAvailable()}
+          onClick={() => void travelFromGps()}
+          className={`${buttonClass} w-full bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-100`}
+        >
+          {travelBusy ? "Working it out…" : "📍 Calculate from GPS"}
+        </button>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          {travelNote || (locationAvailable() ? "Round trip from your base to where you are (or your arrival stamp)." : "GPS needs the HTTPS address.")}
+        </p>
       </Card>
 
       <Card title="Products & items">
@@ -273,7 +370,12 @@ export function JobCardForm({
         {showPhotos ? (
           <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Site photos</h3>
-            <PhotoCapture photos={photos} onChange={setPhotos} />
+            <PhotoCapture
+              photos={photos}
+              onChange={setPhotos}
+              slots={isTarana ? TARANA_PHOTO_SLOTS : []}
+              required={isTarana && taranaWork === "install"}
+            />
           </div>
         ) : null}
       </Card>

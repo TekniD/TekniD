@@ -1,4 +1,6 @@
 // Shapes shared between the browser (Dexie) and the API routes.
+import type { GpsFix } from "./geo";
+import type { TaranaInstall, TaranaWork } from "./install";
 import type { TaranaCallout } from "./tarana";
 
 export type JobType = "normal" | "tarana";
@@ -43,6 +45,12 @@ export interface JobCard {
   jobType?: JobType;
   /** Details read from the pasted Tarana call-out. */
   tarana?: TaranaCallout;
+  /** Tarana jobs: new install or fault / maintenance visit. */
+  taranaWork?: TaranaWork;
+  /** Tarana checklist readings. */
+  install?: TaranaInstall;
+  /** Where the phone was on arrival and when the card was saved. */
+  gps?: { arrive?: GpsFix; save?: GpsFix };
   /** Existing Invoice Ninja client id. Empty when newClient is set. */
   clientId: string;
   /** Set when the client was added on-device and must be created first. */
@@ -60,6 +68,8 @@ export interface JobCard {
   notes: string;
   signature?: string; // data:image/png;base64,...
   photos: string[]; // data:image/jpeg;base64,... (already compressed)
+  /** Label per photo (same order as photos), e.g. "Cable entry". */
+  photoLabels?: string[];
 }
 
 /** saved = on the phone only, not submitted yet. The rest are after Submit. */

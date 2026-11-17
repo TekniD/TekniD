@@ -95,7 +95,7 @@ export function formatZaPhone(raw: string): string {
 export function calloutSummary(c: TaranaCallout): string[] {
   return [
     c.mtnRef && `MTN Business Ref: ${c.mtnRef}`,
-    c.typeOfCall && `Fault reported: ${c.typeOfCall}`,
+    c.typeOfCall && `Type of call: ${c.typeOfCall}`,
     c.customerSite && `Customer site: ${c.customerSite}`,
     c.customerName && `Customer: ${c.customerName}`,
     c.contactNumber && `Contact: ${formatZaPhone(c.contactNumber)}`,

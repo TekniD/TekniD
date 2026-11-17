@@ -90,7 +90,10 @@ function documentsFor(job: JobCard): { dataUrl: string; filename: string }[] {
   const stamp = job.timeIn.slice(0, 10);
   const docs: { dataUrl: string; filename: string }[] = [];
   if (job.signature) docs.push({ dataUrl: job.signature, filename: `signature-${stamp}.png` });
-  job.photos.forEach((p, i) => docs.push({ dataUrl: p, filename: `site-photo-${stamp}-${i + 1}.jpg` }));
+  job.photos.forEach((p, i) => {
+    const label = (job.photoLabels?.[i] || "site photo").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    docs.push({ dataUrl: p, filename: `${label}-${stamp}-${i + 1}.jpg` });
+  });
   return docs;
 }
 

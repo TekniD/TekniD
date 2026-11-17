@@ -17,6 +17,16 @@ Built with Next.js 16 (App Router), React 19, Tailwind CSS 4, Dexie (IndexedDB),
   Tarana jobs are billed to the client named in `NEXT_PUBLIC_TARANA_CLIENT_NAME`
   (BVE), the MTN ref goes in the invoice's PO number, and adds the call-out details to the invoice notes.
   Site photos are always offered on Tarana jobs.
+- **Tarana checklist:** each Tarana job is a *New install* or *Fault /
+  maintenance*. It records RN serial/MAC, BN/sector, RSSI, SINR, speed test,
+  mount, cable and router. Installs can't be saved until the required readings,
+  the "aligned" confirmation and five labelled photos (mast, RN label, cable
+  entry, router/PoE, speed test) are in. Readings go into the invoice notes.
+- **GPS:** tapping *Now* on time in stamps the arrival location, and saving
+  stamps it again. Both go into the invoice's private notes with a Maps link.
+  *Calculate from GPS* fills the round-trip travel from your base
+  (`TRAVEL_BASE_ADDRESS` or `TRAVEL_BASE_LATLNG`) using OSRM road distance.
+  GPS needs the app opened over HTTPS.
 - **Form:** searchable client picker with *Add new client*, time in / time out,
   round-trip travel distance (km by default), searchable product multi-select
   with quantities, work notes, optional client signature.
@@ -73,7 +83,8 @@ what `src/lib/server/invoiceNinja.ts` and `api-tests.sh` both do.
    | `STANDARD_LABOR_KEY` | product key for normal-hours labour |
    | `AFTER_HOURS_LABOR_KEY` | product key for after-hours / weekend labour |
    | `TRAVEL_MILEAGE_KEY` | product key for travel |
-   | `NEXT_PUBLIC_TARANA_CLIENT_NAME` | client Tarana work is billed to (default `BVE`) |
+   | `TRAVEL_BASE_ADDRESS` / `TRAVEL_BASE_LATLNG` | base for GPS travel (address looked up once, or exact `lat,lng`) |
+| `NEXT_PUBLIC_TARANA_CLIENT_NAME` | client Tarana work is billed to (default `BVE`) |
 | `NEXT_PUBLIC_DISTANCE_UNIT` | `km` (default) or `mi`, label only |
 4. **Check the API before deploying:**
    ```bash
