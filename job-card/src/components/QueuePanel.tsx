@@ -45,6 +45,7 @@ export function QueuePanel() {
               <div className="truncate font-medium text-slate-900 dark:text-slate-100">{e.job.clientName}</div>
               <div className="text-xs text-slate-500">
                 {e.job.timeIn.replace("T", " ")} · {e.job.hours.toFixed(2)} h
+                {e.job.tarana?.mtnRef ? ` · ${e.job.tarana.mtnRef}` : ""}
                 {e.progress.invoiceNumber ? ` · Invoice ${e.progress.invoiceNumber}` : ""}
               </div>
               {e.error ? <div className="mt-1 break-words text-xs text-red-600 dark:text-red-400">{e.error}</div> : null}

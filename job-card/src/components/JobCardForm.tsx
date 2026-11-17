@@ -3,9 +3,13 @@
 import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { decimalHours, durationLabel, looksAfterHours, needsSitePhotos, toLocalInputValue } from "@/lib/calc";
+import { db } from "@/lib/db";
 import { processQueue, queueJob } from "@/lib/sync";
-import type { CachedClient, JobCard, JobLineItem, NewClientInput } from "@/lib/types";
+import { EMPTY_CALLOUT, type TaranaCallout } from "@/lib/tarana";
+import type { CachedClient, JobCard, JobLineItem, JobType, NewClientInput } from "@/lib/types";
 import { ClientPicker } from "./ClientPicker";
+import { JobTypeChooser } from "./JobTypeChooser";
+import { TaranaDetails } from "./TaranaDetails";
 import { NewClientModal } from "./NewClientModal";
 import { PhotoCapture } from "./PhotoCapture";
 import { ProductPicker } from "./ProductPicker";
@@ -25,7 +29,21 @@ function nowRounded(): string {
   return toLocalInputValue(d);
 }
 
+/** Find the cached client a call-out's "Company Name" refers to, if any. */
+async function matchClient(companyName: string): Promise<CachedClient | undefined> {
+  const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const target = norm(companyName);
+  if (target.length < 3) return undefined;
+  const all = await db.clients.toArray();
+  return (
+    all.find((c) => norm(c.name) === target) ??
+    all.find((c) => norm(c.name).startsWith(target) || target.startsWith(norm(c.name)))
+  );
+}
+
 export function JobCardForm({ onQueued }: { onQueued: (message: string) => void }) {
+  const [jobType, setJobType] = useState<JobType | null>(null);
+  const [callout, setCallout] = useState<TaranaCallout>(EMPTY_CALLOUT);
   const [client, setClient] = useState<CachedClient | null>(null);
   // New clients typed in on-device, keyed by their local id.
   const [newClients, setNewClients] = useState<Record<string, NewClientInput>>({});
@@ -43,11 +61,27 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
   const [saving, setSaving] = useState(false);
 
   const hours = useMemo(() => decimalHours(timeIn, timeOut), [timeIn, timeOut]);
-  const showPhotos = useMemo(() => needsSitePhotos(items.map((i) => i.product_key)), [items]);
+  const isTarana = jobType === "tarana";
+  const showPhotos = useMemo(
+    () => isTarana || needsSitePhotos(items.map((i) => i.product_key)),
+    [isTarana, items],
+  );
   const distance = Number(travel) || 0;
   const afterHoursHint = !afterHours && looksAfterHours(timeIn);
 
+  async function updateCallout(next: TaranaCallout) {
+    const companyChanged = next.companyName !== callout.companyName;
+    setCallout(next);
+    // Pick the billing client from the call-out's company name when we can.
+    if (companyChanged && next.companyName && !client) {
+      const match = await matchClient(next.companyName);
+      if (match) setClient(match);
+    }
+  }
+
   function reset() {
+    setJobType(null);
+    setCallout(EMPTY_CALLOUT);
     setClient(null);
     setTimeIn(nowRounded());
     setTimeOut("");
@@ -64,7 +98,8 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const problems: string[] = [];
-    if (!client) problems.push("Choose a client");
+    if (isTarana && !callout.mtnRef.trim()) problems.push("Enter the MTN Business Ref from the call-out");
+    if (!client) problems.push(isTarana ? "Choose the client to bill (e.g. the company that sent the call-out)" : "Choose a client");
     if (!timeIn || !timeOut) problems.push("Enter both time in and time out");
     else if (hours <= 0) problems.push("Time out must be after time in");
     if (distance < 0) problems.push("Travel distance can't be negative");
@@ -77,6 +112,8 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
     }
 
     const job: JobCard = {
+      jobType: jobType ?? "normal",
+      tarana: isTarana ? callout : undefined,
       clientId: client.pending ? "" : client.id,
       newClient: client.pending ? newClients[client.id] ?? { name: client.name } : undefined,
       localClientId: client.pending ? client.id : undefined,
@@ -111,8 +148,23 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
     }
   }
 
+  if (!jobType) return <JobTypeChooser onChoose={setJobType} />;
+
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+          {isTarana ? "📡 Tarana call-out" : "🛠️ Normal job"}
+        </h2>
+        <button
+          type="button"
+          className="rounded-lg px-3 py-2 text-sm font-medium text-blue-700 dark:text-blue-300"
+          onClick={() => setJobType(isTarana ? "normal" : "tarana")}
+        >
+          Switch to {isTarana ? "normal job" : "Tarana"}
+        </button>
+      </div>
+
       {errors.length > 0 ? (
         <div role="alert" className="rounded-2xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200">
           <ul className="list-inside list-disc space-y-1">
@@ -123,8 +175,19 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
         </div>
       ) : null}
 
-      <Card title="Client">
-        <ClientPicker value={client} onChange={setClient} onAddNew={(name) => setModal({ name })} />
+      {isTarana ? (
+        <Card title="Call-out details">
+          <TaranaDetails value={callout} onChange={(c) => void updateCallout(c)} />
+        </Card>
+      ) : null}
+
+      <Card title={isTarana ? "Bill to" : "Client"}>
+        <ClientPicker value={client} onChange={setClient} onAddNew={(name) => setModal({ name: name || (isTarana ? callout.companyName : "") })} />
+        {isTarana && !client && callout.companyName ? (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            No cached client matches “{callout.companyName}”. Search for it or add it as a new client.
+          </p>
+        ) : null}
       </Card>
 
       <Card
@@ -180,7 +243,7 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
         <ProductPicker items={items} onChange={setItems} />
         {showPhotos ? (
           <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Tarana site photos</h3>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Site photos</h3>
             <PhotoCapture photos={photos} onChange={setPhotos} />
           </div>
         ) : null}

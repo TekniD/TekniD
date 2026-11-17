@@ -187,6 +187,7 @@ export interface InvoiceLineItem {
 export async function createDraftInvoice(input: {
   client_id: string;
   date: string; // YYYY-MM-DD
+  po_number?: string;
   line_items: InvoiceLineItem[];
   public_notes: string;
   private_notes?: string;

@@ -11,6 +11,12 @@ Built with Next.js 16 (App Router), React 19, Tailwind CSS 4, Dexie (IndexedDB),
 
 - **Works offline.** Clients and products are cached in IndexedDB; job cards are
   queued in `pending_syncs` and pushed when the phone is back on the VPN.
+- **Two job types:** each new job card starts with *Normal job* or *Tarana
+  call-out*. For Tarana, paste the call-out text and the app reads Type of Call
+  (fault), Customer Site, Site Contact name and number, and MTN Business Ref#.
+  It picks the billing client from *Company Name*, puts the MTN ref in the
+  invoice's PO number, and adds the call-out details to the invoice notes.
+  Site photos are always offered on Tarana jobs.
 - **Form:** searchable client picker with *Add new client*, time in / time out,
   round-trip travel distance (km by default), searchable product multi-select
   with quantities, work notes, optional client signature.
@@ -122,12 +128,14 @@ job-card/
     ├── components/
     │   ├── JobCardApp.tsx         # shell, online state, cache refresh
     │   ├── JobCardForm.tsx        # the form + calculations
+    │   ├── JobTypeChooser.tsx, TaranaDetails.tsx
     │   ├── ClientPicker.tsx, NewClientModal.tsx, ProductPicker.tsx
     │   ├── SignatureField.tsx, PhotoCapture.tsx, QueuePanel.tsx
     │   └── ServiceWorkerRegister.tsx
     └── lib/
         ├── db.ts                  # Dexie: clients, products, pending_syncs
         ├── calc.ts                # decimal hours, TAR- detection
+        ├── tarana.ts              # pasted Tarana call-out parser
         ├── images.ts              # compression → Base64
         ├── sync.ts                # cache refresh + queue processor
         ├── types.ts

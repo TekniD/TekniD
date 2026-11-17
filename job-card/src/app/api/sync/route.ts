@@ -8,6 +8,7 @@ import {
   type InvoiceLineItem,
 } from "@/lib/server/invoiceNinja";
 import { errorMessage, json, optionsNotAllowed, rejectCrossOrigin } from "@/lib/server/http";
+import { calloutSummary, formatZaPhone } from "@/lib/tarana";
 import type { JobCard, NewClientInput } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -51,15 +52,7 @@ export async function POST(req: NextRequest) {
         if (!body.clientId) return json({ error: "clientId is required" }, 400);
         const { lineItems, warnings } = await buildLineItems(body.job);
         if (lineItems.length === 0) return json({ error: "Job card has no billable lines" }, 400);
-        const invoice = await createDraftInvoice({
-          client_id: body.clientId,
-          date: body.job.timeIn.slice(0, 10),
-          line_items: lineItems,
-          public_notes: body.job.notes ?? "",
-          private_notes: `Job card: in ${fmt(body.job.timeIn)}, out ${fmt(body.job.timeOut)}${
-            body.job.afterHours ? " (after-hours rate)" : ""
-          }. Captured on the Job Card app.`,
-        });
+        const invoice = await createDraftInvoice(invoiceFields(body.clientId, body.job, lineItems));
         return json({ invoiceId: invoice.id, invoiceNumber: invoice.number, warnings });
       }
       case "document": {
@@ -81,6 +74,41 @@ export async function POST(req: NextRequest) {
 }
 
 export const OPTIONS = optionsNotAllowed;
+
+/** Notes, PO number and dates for the invoice, including Tarana call-out details. */
+function invoiceFields(clientId: string, job: JobCard, lineItems: InvoiceLineItem[]) {
+  const t = job.jobType === "tarana" ? job.tarana : undefined;
+  const header = t ? calloutSummary(t) : [];
+  const publicNotes = [header.join("\n"), job.notes ?? ""].filter(Boolean).join("\n\n");
+
+  const privateLines = [
+    `Job card${t ? " (Tarana call-out)" : ""}: in ${fmt(job.timeIn)}, out ${fmt(job.timeOut)}${
+      job.afterHours ? " (after-hours rate)" : ""
+    }.`,
+  ];
+  if (t) {
+    const extra = [
+      t.companyName && `From: ${t.companyName}`,
+      t.region && `Region: ${t.region}`,
+      t.technicalEngineer && `Technical engineer: ${t.technicalEngineer}`,
+      t.asNumber && `AS number: ${t.asNumber}`,
+      t.requisitionDate && `Requisition date: ${t.requisitionDate}`,
+      t.officeHours && `Site hours: ${t.officeHours}`,
+    ].filter(Boolean);
+    privateLines.push(...(extra as string[]));
+  }
+  privateLines.push("Captured on the Job Card app.");
+
+  return {
+    client_id: clientId,
+    date: job.timeIn.slice(0, 10),
+    // The MTN ref goes in the PO number so it shows on the invoice and is searchable.
+    po_number: t?.mtnRef?.trim() || undefined,
+    line_items: lineItems,
+    public_notes: publicNotes,
+    private_notes: privateLines.join("\n"),
+  };
+}
 
 /** "2026-11-13T09:05" -> "2026-11-13 09:05" (device local time, kept as-is). */
 function fmt(local: string): string {

@@ -1,4 +1,7 @@
 // Shapes shared between the browser (Dexie) and the API routes.
+import type { TaranaCallout } from "./tarana";
+
+export type JobType = "normal" | "tarana";
 
 export interface CachedClient {
   /** Invoice Ninja hashed id, or a local id ("local-<uuid>") for clients not yet synced. */
@@ -36,6 +39,10 @@ export interface JobLineItem {
 
 /** What the form produces. Everything the server needs to build the invoice. */
 export interface JobCard {
+  /** Normal job, or a sub-contracted Tarana call-out. Older queued jobs lack it. */
+  jobType?: JobType;
+  /** Details read from the pasted Tarana call-out. */
+  tarana?: TaranaCallout;
   /** Existing Invoice Ninja client id. Empty when newClient is set. */
   clientId: string;
   /** Set when the client was added on-device and must be created first. */
