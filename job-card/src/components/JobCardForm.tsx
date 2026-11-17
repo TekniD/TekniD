@@ -21,6 +21,9 @@ const SignatureField = dynamic(() => import("./SignatureField").then((m) => m.Si
   loading: () => <div className="h-48 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />,
 });
 
+/** Invoice Ninja client that Tarana sub-contract work is billed to. */
+const TARANA_CLIENT_NAME = process.env.NEXT_PUBLIC_TARANA_CLIENT_NAME || "BVE";
+
 const DISTANCE_UNIT = process.env.NEXT_PUBLIC_DISTANCE_UNIT === "mi" ? "mi" : "km";
 
 function nowRounded(): string {
@@ -29,15 +32,15 @@ function nowRounded(): string {
   return toLocalInputValue(d);
 }
 
-/** Find the cached client a call-out's "Company Name" refers to, if any. */
-async function matchClient(companyName: string): Promise<CachedClient | undefined> {
+/** Find a cached client by name: exact match first, then a name starting with it. */
+async function matchClient(name: string): Promise<CachedClient | undefined> {
   const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const target = norm(companyName);
-  if (target.length < 3) return undefined;
+  const target = norm(name);
+  if (!target) return undefined;
   const all = await db.clients.toArray();
   return (
     all.find((c) => norm(c.name) === target) ??
-    all.find((c) => norm(c.name).startsWith(target) || target.startsWith(norm(c.name)))
+    all.find((c) => norm(c.name).startsWith(target))
   );
 }
 
@@ -69,12 +72,11 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
   const distance = Number(travel) || 0;
   const afterHoursHint = !afterHours && looksAfterHours(timeIn);
 
-  async function updateCallout(next: TaranaCallout) {
-    const companyChanged = next.companyName !== callout.companyName;
-    setCallout(next);
-    // Pick the billing client from the call-out's company name when we can.
-    if (companyChanged && next.companyName && !client) {
-      const match = await matchClient(next.companyName);
+  async function chooseJobType(type: JobType) {
+    setJobType(type);
+    // Tarana sub-contract work is always billed to the same client (BVE).
+    if (type === "tarana" && !client) {
+      const match = await matchClient(TARANA_CLIENT_NAME);
       if (match) setClient(match);
     }
   }
@@ -99,7 +101,7 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
     e.preventDefault();
     const problems: string[] = [];
     if (isTarana && !callout.mtnRef.trim()) problems.push("Enter the MTN Business Ref from the call-out");
-    if (!client) problems.push(isTarana ? "Choose the client to bill (e.g. the company that sent the call-out)" : "Choose a client");
+    if (!client) problems.push(isTarana ? `Choose the client to bill (normally ${TARANA_CLIENT_NAME})` : "Choose a client");
     if (!timeIn || !timeOut) problems.push("Enter both time in and time out");
     else if (hours <= 0) problems.push("Time out must be after time in");
     if (distance < 0) problems.push("Travel distance can't be negative");
@@ -148,7 +150,7 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
     }
   }
 
-  if (!jobType) return <JobTypeChooser onChoose={setJobType} />;
+  if (!jobType) return <JobTypeChooser onChoose={(t) => void chooseJobType(t)} />;
 
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
@@ -159,7 +161,7 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
         <button
           type="button"
           className="rounded-lg px-3 py-2 text-sm font-medium text-blue-700 dark:text-blue-300"
-          onClick={() => setJobType(isTarana ? "normal" : "tarana")}
+          onClick={() => void chooseJobType(isTarana ? "normal" : "tarana")}
         >
           Switch to {isTarana ? "normal job" : "Tarana"}
         </button>
@@ -177,15 +179,16 @@ export function JobCardForm({ onQueued }: { onQueued: (message: string) => void 
 
       {isTarana ? (
         <Card title="Call-out details">
-          <TaranaDetails value={callout} onChange={(c) => void updateCallout(c)} />
+          <TaranaDetails value={callout} onChange={setCallout} />
         </Card>
       ) : null}
 
       <Card title={isTarana ? "Bill to" : "Client"}>
-        <ClientPicker value={client} onChange={setClient} onAddNew={(name) => setModal({ name: name || (isTarana ? callout.companyName : "") })} />
-        {isTarana && !client && callout.companyName ? (
+        <ClientPicker value={client} onChange={setClient} onAddNew={(name) => setModal({ name })} />
+        {isTarana && !client ? (
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            No cached client matches “{callout.companyName}”. Search for it or add it as a new client.
+            Tarana work is billed to {TARANA_CLIENT_NAME}, but no cached client with that name was found. Tap Sync, or
+            search for the client.
           </p>
         ) : null}
       </Card>

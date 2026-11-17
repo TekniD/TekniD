@@ -14,8 +14,8 @@ Built with Next.js 16 (App Router), React 19, Tailwind CSS 4, Dexie (IndexedDB),
 - **Two job types:** each new job card starts with *Normal job* or *Tarana
   call-out*. For Tarana, paste the call-out text and the app reads Type of Call
   (fault), Customer Site, Site Contact name and number, and MTN Business Ref#.
-  It picks the billing client from *Company Name*, puts the MTN ref in the
-  invoice's PO number, and adds the call-out details to the invoice notes.
+  Tarana jobs are billed to the client named in `NEXT_PUBLIC_TARANA_CLIENT_NAME`
+  (BVE), the MTN ref goes in the invoice's PO number, and adds the call-out details to the invoice notes.
   Site photos are always offered on Tarana jobs.
 - **Form:** searchable client picker with *Add new client*, time in / time out,
   round-trip travel distance (km by default), searchable product multi-select
@@ -70,7 +70,8 @@ what `src/lib/server/invoiceNinja.ts` and `api-tests.sh` both do.
    | `STANDARD_LABOR_KEY` | product key for normal-hours labour |
    | `AFTER_HOURS_LABOR_KEY` | product key for after-hours / weekend labour |
    | `TRAVEL_MILEAGE_KEY` | product key for travel |
-   | `NEXT_PUBLIC_DISTANCE_UNIT` | `km` (default) or `mi`, label only |
+   | `NEXT_PUBLIC_TARANA_CLIENT_NAME` | client Tarana work is billed to (default `BVE`) |
+| `NEXT_PUBLIC_DISTANCE_UNIT` | `km` (default) or `mi`, label only |
 4. **Check the API before deploying:**
    ```bash
    ./api-tests.sh            # leaves a test draft invoice
