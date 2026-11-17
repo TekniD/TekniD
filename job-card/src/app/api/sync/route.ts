@@ -8,7 +8,7 @@ import {
   type InvoiceLineItem,
 } from "@/lib/server/invoiceNinja";
 import { errorMessage, json, optionsNotAllowed, rejectCrossOrigin } from "@/lib/server/http";
-import { calloutSummary, formatZaPhone } from "@/lib/tarana";
+import { calloutSummary } from "@/lib/tarana";
 import type { JobCard, NewClientInput } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
