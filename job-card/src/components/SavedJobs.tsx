@@ -101,9 +101,17 @@ export function SavedJobs({
                   <button
                     type="button"
                     className={`${buttonClass} min-h-11 bg-red-600 text-sm text-white`}
-                    onClick={() => {
-                      void db.pending_syncs.delete(e.id!);
+                    onClick={async () => {
                       setConfirmDelete(null);
+                      const localId = e.job.localClientId;
+                      await db.transaction("rw", db.pending_syncs, db.clients, async () => {
+                        await db.pending_syncs.delete(e.id!);
+                        // Drop a phone-only new client if no other card still uses it.
+                        if (localId) {
+                          const others = await db.pending_syncs.filter((p) => p.job.localClientId === localId).count();
+                          if (others === 0) await db.clients.delete(localId);
+                        }
+                      });
                     }}
                   >
                     Delete

@@ -1,7 +1,7 @@
 /*
  * Job Card service worker (hand-written, no build plugin needed).
  *
- *  - App shell ("/") is pre-cached so the form opens with no network.
+ *  - App shell ("/") is cached on the first logged-in visit so the form opens offline.
  *  - /_next/static/* is content-hashed, so it is cache-first forever.
  *  - Pages are network-first with the cached shell as fallback.
  *  - /api/* is never cached: clients/products live in IndexedDB instead, and
@@ -10,10 +10,10 @@
  *
  * Bump VERSION to force old caches out after a breaking change.
  */
-const VERSION = "v1";
+const VERSION = "v2";
 const SHELL_CACHE = `job-card-shell-${VERSION}`;
 const STATIC_CACHE = `job-card-static-${VERSION}`;
-const SHELL_URLS = ["/", "/manifest.json", "/icons/icon-192.png", "/icons/icon-512.png", "/vendor/browser-image-compression.js"];
+const SHELL_URLS = ["/manifest.json", "/icons/icon-192.png", "/icons/icon-512.png", "/vendor/browser-image-compression.js"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -65,7 +65,8 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          if (res.ok && url.pathname === "/") {
+          // Only cache the real app shell, never a redirect to the login page.
+          if (res.ok && !res.redirected && url.pathname === "/") {
             const copy = res.clone();
             caches.open(SHELL_CACHE).then((c) => c.put("/", copy));
           }

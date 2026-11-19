@@ -10,6 +10,13 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401 && body?.login) {
+    // Session expired: saved cards stay in IndexedDB, just log in again.
+    // Full reload on purpose: the session cookie changed.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.assign("/login");
+    throw new Error("Please log in again");
+  }
   if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
   return body as T;
 }
@@ -47,8 +54,19 @@ export async function refreshCache(): Promise<{ clients: number; products: numbe
  * Save a job card on the phone without sending it anywhere. Pass an id to
  * update a saved card that is being edited.
  */
+function newUid(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export async function saveJob(job: JobCard, id?: number): Promise<number> {
   const now = Date.now();
+  // Stable id per job card, so the server can recognise a retried submit.
+  if (!job.uid) {
+    const existing = id !== undefined ? await db.pending_syncs.get(id) : undefined;
+    job = { ...job, uid: existing?.job.uid ?? newUid() };
+  }
   if (id !== undefined) {
     await db.pending_syncs.update(id, { job, updatedAt: now, status: "saved", error: undefined });
     return id;
@@ -112,7 +130,7 @@ async function syncOne(entry: PendingSync): Promise<void> {
   if (!clientId && job.newClient) {
     const res = await api<{ clientId: string; client: CachedClient }>("/api/sync", {
       method: "POST",
-      body: JSON.stringify({ action: "client", client: job.newClient }),
+      body: JSON.stringify({ action: "client", client: job.newClient, uid: job.uid ?? `local-${id}` }),
     });
     clientId = res.clientId;
     progress.clientId = clientId;
@@ -140,7 +158,7 @@ async function syncOne(entry: PendingSync): Promise<void> {
   if (!progress.invoiceId) {
     const res = await api<{ invoiceId: string; invoiceNumber: string; warnings: string[] }>("/api/sync", {
       method: "POST",
-      body: JSON.stringify({ action: "invoice", clientId, job }),
+      body: JSON.stringify({ action: "invoice", clientId, job, uid: job.uid ?? `local-${id}` }),
     });
     progress.invoiceId = res.invoiceId;
     progress.invoiceNumber = res.invoiceNumber;
@@ -165,7 +183,7 @@ async function syncOne(entry: PendingSync): Promise<void> {
   // Done: drop the heavy Base64 payload but keep a small receipt.
   await saveProgress(id, {
     status: "done",
-    job: { ...job, signature: job.signature ? "uploaded" : undefined, photos: [] },
+    job: { ...job, signature: job.signature ? "uploaded" : undefined, photos: [], photoLabels: [] },
   });
 }
 
@@ -199,6 +217,15 @@ export function processQueue(): Promise<{ synced: number; failed: number }> {
     running = null;
   });
   return running;
+}
+
+/** Ask the browser not to evict our IndexedDB (saved cards only live here). */
+export async function requestPersistentStorage(): Promise<void> {
+  try {
+    if (navigator.storage?.persisted && !(await navigator.storage.persisted())) await navigator.storage.persist();
+  } catch {
+    // Not supported; nothing else to do.
+  }
 }
 
 /** Ask the service worker to wake us when connectivity returns (Chrome/Android). */

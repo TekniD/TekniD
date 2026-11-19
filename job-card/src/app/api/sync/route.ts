@@ -8,6 +8,7 @@ import {
   type InvoiceLineItem,
 } from "@/lib/server/invoiceNinja";
 import { errorMessage, json, optionsNotAllowed, rejectCrossOrigin } from "@/lib/server/http";
+import { remember, remembered } from "@/lib/server/idempotency";
 import { mapsLink } from "@/lib/geo";
 import { installSummary } from "@/lib/install";
 import { calloutSummary } from "@/lib/tarana";
@@ -28,38 +29,89 @@ export const dynamic = "force-dynamic";
  * Documents go one per request so no single request body gets large.
  */
 type SyncRequest =
-  | { action: "client"; client: NewClientInput }
-  | { action: "invoice"; clientId: string; job: JobCard }
+  | { action: "client"; client: NewClientInput; uid?: string }
+  | { action: "invoice"; clientId: string; job: JobCard; uid?: string }
   | { action: "document"; invoiceId: string; dataUrl: string; filename: string };
+
+/** Largest request we accept (one compressed photo as Base64 is ~2 MB). */
+const MAX_BODY_BYTES = 12 * 1024 * 1024;
+/** Largest decoded document we forward to Invoice Ninja. */
+const MAX_DOC_BYTES = 8 * 1024 * 1024;
+const ALLOWED_DOC_TYPES = /^data:image\/(png|jpeg|webp);base64,/;
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Basic sanity limits so a bad or tampered payload can't create a silly invoice. */
+function jobProblems(job: JobCard | undefined): string | null {
+  if (!job || typeof job !== "object") return "job is required";
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(job.timeIn ?? "") || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(job.timeOut ?? "")) {
+    return "timeIn / timeOut are invalid";
+  }
+  const hours = Number(job.hours);
+  if (!(hours >= 0 && hours <= 72)) return "hours must be between 0 and 72";
+  const km = Number(job.travelDistance);
+  if (!(km >= 0 && km <= 5000)) return "travel distance must be between 0 and 5000";
+  if (!Array.isArray(job.items) || job.items.length > 100) return "too many items";
+  for (const i of job.items) {
+    if (typeof i.product_key !== "string" || i.product_key.length > 200) return "invalid product";
+    if (!(Number(i.quantity) >= 0 && Number(i.quantity) <= 100000)) return `invalid quantity for ${i.product_key}`;
+    if (!(Number(i.cost) >= 0 && Number(i.cost) <= 10_000_000)) return `invalid price for ${i.product_key}`;
+  }
+  if (String(job.notes ?? "").length > 20000) return "notes are too long";
+  return null;
+}
 
 export async function POST(req: NextRequest) {
   const blocked = rejectCrossOrigin(req);
   if (blocked) return blocked;
 
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
+    return json({ error: "Request too large" }, 413);
+  }
   let body: SyncRequest;
   try {
-    body = await req.json();
+    const text = await req.text();
+    if (text.length > MAX_BODY_BYTES) return json({ error: "Request too large" }, 413);
+    body = JSON.parse(text);
   } catch {
     return json({ error: "Invalid JSON body" }, 400);
   }
+  const uid = "uid" in body && typeof body.uid === "string" && body.uid.length <= 100 ? body.uid : undefined;
 
   try {
     switch (body.action) {
       case "client": {
         if (!body.client?.name?.trim()) return json({ error: "Client name is required" }, 400);
+        if (JSON.stringify(body.client).length > 5000) return json({ error: "Client details are too long" }, 400);
+        const done = uid && remembered<{ clientId: string; client: unknown }>(`client:${uid}`);
+        if (done) return json(done);
         const client = await createClient(body.client);
-        return json({ clientId: client.id, client });
+        const result = { clientId: client.id, client };
+        if (uid) remember(`client:${uid}`, result);
+        return json(result);
       }
       case "invoice": {
-        if (!body.clientId) return json({ error: "clientId is required" }, 400);
+        if (!body.clientId || !ID_RE.test(body.clientId)) return json({ error: "clientId is invalid" }, 400);
+        const problem = jobProblems(body.job);
+        if (problem) return json({ error: problem }, 400);
+        // A retry of a submit whose response was lost: return the invoice we already made.
+        const done = uid && remembered<{ invoiceId: string; invoiceNumber: string; warnings: string[] }>(`invoice:${uid}`);
+        if (done) return json(done);
         const { lineItems, warnings } = await buildLineItems(body.job);
         if (lineItems.length === 0) return json({ error: "Job card has no billable lines" }, 400);
         const invoice = await createDraftInvoice(invoiceFields(body.clientId, body.job, lineItems));
-        return json({ invoiceId: invoice.id, invoiceNumber: invoice.number, warnings });
+        const result = { invoiceId: invoice.id, invoiceNumber: invoice.number, warnings };
+        if (uid) remember(`invoice:${uid}`, result);
+        return json(result);
       }
       case "document": {
-        if (!body.invoiceId || !body.dataUrl) return json({ error: "invoiceId and dataUrl are required" }, 400);
-        const filename = (body.filename || "document").replace(/[^\w.\-]+/g, "_");
+        if (!body.invoiceId || !ID_RE.test(body.invoiceId)) return json({ error: "invoiceId is invalid" }, 400);
+        if (typeof body.dataUrl !== "string" || !ALLOWED_DOC_TYPES.test(body.dataUrl)) {
+          return json({ error: "Only PNG, JPEG or WebP images can be attached" }, 400);
+        }
+        if (((body.dataUrl.length - body.dataUrl.indexOf(",")) * 3) / 4 > MAX_DOC_BYTES) {
+          return json({ error: "Image is too large" }, 413);
+        }
+        const filename = String(body.filename || "document").replace(/[^\w.\-]+/g, "_").slice(0, 100);
         await uploadInvoiceDocument(body.invoiceId, body.dataUrl, filename);
         return json({ ok: true });
       }
@@ -68,10 +120,9 @@ export async function POST(req: NextRequest) {
     }
   } catch (err) {
     const status = err instanceof InvoiceNinjaError && err.status < 500 ? 422 : 502;
-    return json(
-      { error: errorMessage(err), details: err instanceof InvoiceNinjaError ? err.body : undefined },
-      status,
-    );
+    // Log Invoice Ninja's full error server-side; the phone only gets the message.
+    console.error("[sync]", errorMessage(err), err instanceof InvoiceNinjaError ? JSON.stringify(err.body)?.slice(0, 2000) : "");
+    return json({ error: errorMessage(err) }, status);
   }
 }
 

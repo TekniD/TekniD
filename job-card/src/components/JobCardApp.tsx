@@ -3,7 +3,7 @@
 import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { db } from "@/lib/db";
-import { processQueue, refreshCache } from "@/lib/sync";
+import { processQueue, refreshCache, requestPersistentStorage } from "@/lib/sync";
 import type { PendingSync } from "@/lib/types";
 import { JobCardForm } from "./JobCardForm";
 import { QueuePanel } from "./QueuePanel";
@@ -69,6 +69,7 @@ export function JobCardApp() {
   useEffect(() => {
     // Refresh the cache once after first paint, then whenever we come back online.
     const first = setTimeout(() => void refresh(), 0);
+    void requestPersistentStorage();
 
     const goOnline = () => void refresh();
     // The service worker posts SYNC when Background Sync fires.
@@ -101,6 +102,21 @@ export function JobCardApp() {
             {lastRefresh ? ` · cache ${new Date(lastRefresh).toLocaleString("en-ZA", { dateStyle: "short", timeStyle: "short" })}` : ""}
           </p>
         </div>
+        <div className="flex items-center gap-1">
+        <button
+          type="button"
+          aria-label="Lock app"
+          title="Lock"
+          onClick={async () => {
+            await fetch("/api/logout", { method: "POST" }).catch(() => undefined);
+            // Full reload on purpose: the session cookie changed.
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+            window.location.assign("/login");
+          }}
+          className="min-h-11 rounded-xl px-3 text-lg"
+        >
+          🔒
+        </button>
         <button
           type="button"
           disabled={!online || refreshing}
@@ -109,6 +125,7 @@ export function JobCardApp() {
         >
           {refreshing ? "Syncing…" : "Sync"}
         </button>
+        </div>
       </header>
 
       {toast ? (

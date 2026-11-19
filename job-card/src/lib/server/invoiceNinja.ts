@@ -146,8 +146,8 @@ export async function createClient(input: NewClientInput): Promise<CachedClient>
     // Invoice Ninja requires the contacts array on create.
     contacts: [
       {
-        first_name: input.first_name ?? first ?? "",
-        last_name: input.last_name ?? rest.join(" "),
+        first_name: input.first_name?.trim() || first || "",
+        last_name: input.last_name?.trim() || (input.first_name?.trim() ? "" : rest.join(" ")),
         email: input.email ?? "",
         phone: input.phone ?? "",
         send_email: true,

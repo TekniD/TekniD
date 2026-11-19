@@ -114,6 +114,21 @@ Traefik labels (HTTPS router, LAN/WireGuard IP allow-list, CORS headers blanked)
 
 ## Security notes
 
+- **PIN login.** Set `APP_PIN` in `.env.local`. Every page and API route needs a
+  signed, HttpOnly, SameSite=Strict session cookie (90 days); without `APP_PIN`
+  the production server refuses to serve. Five wrong PINs lock that IP out for
+  15 minutes. The 🔒 button logs out. Changing the PIN logs every phone out.
+- **No duplicate invoices.** Each job card has a uid; the server remembers which
+  uid created which client/invoice (`DATA_DIR`), so a retried submit returns the
+  existing invoice instead of creating another.
+- **Input limits.** Uploads must be PNG/JPEG/WebP images under 8 MB; job cards
+  are sanity-checked (hours, km, quantities, prices, sizes). Invoice Ninja's raw
+  error bodies are logged on the server, not sent to the phone.
+- **Headers.** CSP (same-origin only), X-Frame-Options DENY, nosniff,
+  no-referrer, and camera/GPS limited to the app itself.
+- **Storage.** The app asks the browser for persistent storage so saved cards
+  aren't evicted.
+
 - The Invoice Ninja token lives only in the server environment. The phone only
   ever talks to `/api/clients`, `/api/products` and `/api/sync`.
 - API routes send no `Access-Control-*` headers, refuse `OPTIONS` preflights,

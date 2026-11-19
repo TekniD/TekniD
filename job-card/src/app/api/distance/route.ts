@@ -27,6 +27,7 @@ async function base(): Promise<Point | null> {
   if (!address) return null;
   const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=za&q=${encodeURIComponent(address)}`;
   const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) throw new Error(`Address lookup failed (HTTP ${res.status}); set TRAVEL_BASE_LATLNG instead`);
   const rows = (await res.json()) as { lat: string; lon: string }[];
   if (!rows[0]) throw new Error(`Couldn't find TRAVEL_BASE_ADDRESS on the map; set TRAVEL_BASE_LATLNG instead`);
   return (baseCache = { lat: Number(rows[0].lat), lng: Number(rows[0].lon) });

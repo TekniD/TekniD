@@ -94,10 +94,8 @@ export function JobCardForm({
 
   const hours = useMemo(() => decimalHours(timeIn, timeOut), [timeIn, timeOut]);
   const isTarana = jobType === "tarana";
-  const showPhotos = useMemo(
-    () => isTarana || needsSitePhotos(items.map((i) => i.product_key)),
-    [isTarana, items],
-  );
+  // Photos are available on every job; a TAR- product just adds a reminder.
+  const tarProduct = useMemo(() => needsSitePhotos(items.map((i) => i.product_key)), [items]);
   const distance = Number(travel) || 0;
   const afterHoursHint = !afterHours && looksAfterHours(timeIn);
 
@@ -171,8 +169,10 @@ export function JobCardForm({
 
     setSaving(true);
     // Stamp where the card was saved (best effort, never blocks saving).
-    const gpsSave = locationAvailable() ? await getFix(8_000).catch(() => undefined) : undefined;
-    const keptPhotos = showPhotos ? photos : [];
+    // Keep the first save's stamp when editing later (e.g. back home), so it stays proof of site.
+    const gpsSave =
+      init?.gps?.save ?? (locationAvailable() ? await getFix(8_000).catch(() => undefined) : undefined);
+    const keptPhotos = photos;
 
     const job: JobCard = {
       jobType: jobType ?? "normal",
@@ -367,17 +367,18 @@ export function JobCardForm({
 
       <Card title="Products & items">
         <ProductPicker items={items} onChange={setItems} />
-        {showPhotos ? (
-          <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Site photos</h3>
-            <PhotoCapture
-              photos={photos}
-              onChange={setPhotos}
-              slots={isTarana ? TARANA_PHOTO_SLOTS : []}
-              required={isTarana && taranaWork === "install"}
-            />
-          </div>
+      </Card>
+
+      <Card title="Photos">
+        {tarProduct && !isTarana ? (
+          <p className="text-xs text-amber-700 dark:text-amber-300">A Tarana (TAR-) product is on this job: take site photos.</p>
         ) : null}
+        <PhotoCapture
+          photos={photos}
+          onChange={setPhotos}
+          slots={isTarana ? TARANA_PHOTO_SLOTS : []}
+          required={isTarana && taranaWork === "install"}
+        />
       </Card>
 
       <Card title="Work notes">

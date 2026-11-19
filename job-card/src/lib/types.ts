@@ -41,6 +41,8 @@ export interface JobLineItem {
 
 /** What the form produces. Everything the server needs to build the invoice. */
 export interface JobCard {
+  /** Stable id for this job card, used to make submits safe to retry. */
+  uid?: string;
   /** Normal job, or a sub-contracted Tarana call-out. Older queued jobs lack it. */
   jobType?: JobType;
   /** Details read from the pasted Tarana call-out. */
