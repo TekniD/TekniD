@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { compressToDataUrl, dataUrlSizeKb } from "@/lib/images";
 
 export interface LabelledPhoto {
@@ -23,7 +23,8 @@ export function PhotoCapture({
   required = false,
 }: {
   photos: LabelledPhoto[];
-  onChange: (p: LabelledPhoto[]) => void;
+  /** A state setter: updates are applied on the latest list, so overlapping picks don't overwrite each other. */
+  onChange: Dispatch<SetStateAction<LabelledPhoto[]>>;
   slots?: string[];
   required?: boolean;
 }) {
@@ -39,11 +40,10 @@ export function PhotoCapture({
     setBusy((b) => ({ ...b, [label]: Math.max(0, (b[label] ?? 0) - list.length) }));
     const ok = results.flatMap((r) => (r.status === "fulfilled" ? [{ label, src: r.value }] : []));
     if (ok.length < results.length) setError(`${results.length - ok.length} photo(s) could not be processed`);
-    const kept = replace ? photos.filter((p) => p.label !== label) : photos;
-    onChange([...kept, ...ok]);
+    onChange((current) => [...(replace ? current.filter((p) => p.label !== label) : current), ...ok]);
   }
 
-  const remove = (target: LabelledPhoto) => onChange(photos.filter((p) => p !== target));
+  const remove = (target: LabelledPhoto) => onChange((current) => current.filter((p) => p !== target));
   const others = photos.filter((p) => !slots.includes(p.label));
 
   return (
@@ -74,39 +74,72 @@ export function PhotoCapture({
                 ×
               </button>
             ) : null}
-            <label className="flex h-10 cursor-pointer items-center rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white active:scale-[0.98]">
-              {photo ? "Retake" : "Take"}
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="sr-only"
-                aria-label={`${slot} photo`}
-                onChange={(e) => {
-                  void handleFiles(slot, e.target.files, true);
-                  e.target.value = "";
-                }}
-              />
-            </label>
+            <div className="flex shrink-0 flex-col gap-1">
+              <label className="flex h-9 cursor-pointer items-center justify-center rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white active:scale-[0.98]">
+                {photo ? "Retake" : "Take"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="sr-only"
+                  aria-label={`${slot} photo`}
+                  onChange={(e) => {
+                    void handleFiles(slot, e.target.files, true);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <label className="flex h-9 cursor-pointer items-center justify-center rounded-lg bg-slate-100 px-3 text-sm font-semibold text-slate-800 active:scale-[0.98] dark:bg-slate-800 dark:text-slate-100">
+                Gallery
+                {/* No capture attribute: the phone offers its gallery / files instead of the camera. */}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  aria-label={`${slot} photo from gallery`}
+                  onChange={(e) => {
+                    void handleFiles(slot, e.target.files, true);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            </div>
           </div>
         );
       })}
 
-      <label className="flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed border-blue-400 bg-blue-50 px-4 text-base font-semibold text-blue-700 active:scale-[0.98] dark:bg-blue-950/40 dark:text-blue-300">
-        <span aria-hidden>📷</span> {slots.length ? "Add other photos" : "Take / add site photos"}
-        <input
-          type="file"
-          accept="image/*"
-          capture="environment"
-          multiple
-          className="sr-only"
-          aria-label="Other site photos"
-          onChange={(e) => {
-            void handleFiles(OTHER_LABEL, e.target.files, false);
-            e.target.value = "";
-          }}
-        />
-      </label>
+      {slots.length ? <p className="pt-1 text-xs font-medium text-slate-600 dark:text-slate-400">Other photos</p> : null}
+      <div className="grid grid-cols-2 gap-2">
+        <label className="flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed border-blue-400 bg-blue-50 px-3 text-base font-semibold text-blue-700 active:scale-[0.98] dark:bg-blue-950/40 dark:text-blue-300">
+          <span aria-hidden>📷</span> Take photo
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            multiple
+            className="sr-only"
+            aria-label="Other site photos"
+            onChange={(e) => {
+              void handleFiles(OTHER_LABEL, e.target.files, false);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        <label className="flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white px-3 text-base font-semibold text-slate-700 active:scale-[0.98] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200">
+          <span aria-hidden>🖼️</span> From gallery
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            className="sr-only"
+            aria-label="Other site photos from gallery"
+            onChange={(e) => {
+              void handleFiles(OTHER_LABEL, e.target.files, false);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
       {busy[OTHER_LABEL] ? <p className="text-sm text-slate-500">Compressing {busy[OTHER_LABEL]} photo(s)…</p> : null}
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
       {others.length > 0 ? (
