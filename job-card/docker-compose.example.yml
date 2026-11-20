@@ -1,0 +1,29 @@
+# Example: run behind an existing Traefik on the internal network.
+# Copy to docker-compose.yml, adjust the host name / network / certresolver.
+services:
+  job-card:
+    build: .
+    container_name: job-card
+    restart: unless-stopped
+    env_file: .env.local          # INVOICE_NINJA_URL, INVOICE_NINJA_TOKEN, *_KEY
+    networks: [traefik]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.jobcard.rule=Host(`jobcard.lan.example`)
+      - traefik.http.routers.jobcard.entrypoints=websecure
+      # HTTPS is required: service workers, PWA install and the camera only
+      # work in a secure context. Use a DNS-01 Let's Encrypt resolver or your
+      # internal CA.
+      - traefik.http.routers.jobcard.tls=true
+      - traefik.http.routers.jobcard.tls.certresolver=letsencrypt
+      # Only allow WireGuard / LAN clients.
+      - traefik.http.middlewares.jobcard-ipallow.ipallowlist.sourcerange=10.0.0.0/8,192.168.0.0/16
+      # Belt and braces: drop any CORS headers on the way out.
+      - traefik.http.middlewares.jobcard-nocors.headers.customresponseheaders.Access-Control-Allow-Origin=
+      - traefik.http.middlewares.jobcard-nocors.headers.customresponseheaders.Access-Control-Allow-Credentials=
+      - traefik.http.routers.jobcard.middlewares=jobcard-ipallow,jobcard-nocors
+      - traefik.http.services.jobcard.loadbalancer.server.port=3000
+
+networks:
+  traefik:
+    external: true

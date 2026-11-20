@@ -1,0 +1,240 @@
+"use client";
+
+import { db } from "./db";
+import type { CachedClient, CachedProduct, JobCard, PendingSync } from "./types";
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    cache: "no-store",
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 401 && body?.login) {
+    // Session expired: saved cards stay in IndexedDB, just log in again.
+    // Full reload on purpose: the session cookie changed.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.assign("/login");
+    throw new Error("Please log in again");
+  }
+  if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+  return body as T;
+}
+
+/** Pull the latest clients and products from Invoice Ninja into IndexedDB. */
+export async function refreshCache(): Promise<{ clients: number; products: number }> {
+  const [clients, products] = await Promise.allSettled([
+    api<{ data: CachedClient[] }>("/api/clients"),
+    api<{ data: CachedProduct[] }>("/api/products"),
+  ]);
+  // Apply whatever came back; a failed list keeps its previous cache.
+  await db.transaction("rw", db.clients, db.products, async () => {
+    if (clients.status === "fulfilled") {
+      // Keep clients created on this device that have not synced yet.
+      const localOnly = await db.clients.filter((c) => c.pending === true).toArray();
+      await db.clients.clear();
+      await db.clients.bulkPut([...clients.value.data, ...localOnly]);
+    }
+    if (products.status === "fulfilled") {
+      await db.products.clear();
+      await db.products.bulkPut(products.value.data);
+    }
+  });
+  if (clients.status === "rejected") throw clients.reason;
+  if (products.status === "rejected") throw products.reason;
+  try {
+    localStorage.setItem("job-card:last-refresh", new Date().toISOString());
+  } catch {
+    // storage blocked; the timestamp is only informational
+  }
+  return { clients: clients.value.data.length, products: products.value.data.length };
+}
+
+/**
+ * Save a job card on the phone without sending it anywhere. Pass an id to
+ * update a saved card that is being edited.
+ */
+function newUid(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export async function saveJob(job: JobCard, id?: number): Promise<number> {
+  const now = Date.now();
+  // Stable id per job card, so the server can recognise a retried submit.
+  if (!job.uid) {
+    const existing = id !== undefined ? await db.pending_syncs.get(id) : undefined;
+    job = { ...job, uid: existing?.job.uid ?? newUid() };
+  }
+  if (id !== undefined) {
+    await db.pending_syncs.update(id, { job, updatedAt: now, status: "saved", error: undefined });
+    return id;
+  }
+  return (await db.pending_syncs.add({
+    createdAt: now,
+    updatedAt: now,
+    status: "saved",
+    job,
+    progress: { uploaded: [] },
+  })) as number;
+}
+
+/** Mark saved job cards as submitted and push them to Invoice Ninja (now, or once back online). */
+export async function submitJobs(ids: number[]): Promise<{ synced: number; failed: number }> {
+  const now = Date.now();
+  await db.transaction("rw", db.pending_syncs, async () => {
+    for (const id of ids) {
+      const entry = await db.pending_syncs.get(id);
+      if (entry?.status === "saved") {
+        await db.pending_syncs.update(id, { status: "pending", submittedAt: now, error: undefined });
+      }
+    }
+  });
+  void requestBackgroundSync();
+  return processQueue();
+}
+
+/** Move a failed submission back to Saved so it can be edited, if no invoice was created yet. */
+export async function returnToSaved(id: number): Promise<boolean> {
+  const entry = await db.pending_syncs.get(id);
+  if (!entry || entry.progress.invoiceId || entry.status === "syncing") return false;
+  await db.pending_syncs.update(id, { status: "saved", error: undefined });
+  return true;
+}
+
+/** Signature first, then photos. The index is what progress.uploaded tracks. */
+function documentsFor(job: JobCard): { dataUrl: string; filename: string }[] {
+  const stamp = job.timeIn.slice(0, 10);
+  const docs: { dataUrl: string; filename: string }[] = [];
+  if (job.signature) docs.push({ dataUrl: job.signature, filename: `signature-${stamp}.png` });
+  job.photos.forEach((p, i) => {
+    const label = (job.photoLabels?.[i] || "site photo").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    docs.push({ dataUrl: p, filename: `${label}-${stamp}-${i + 1}.jpg` });
+  });
+  return docs;
+}
+
+async function saveProgress(id: number, patch: Partial<PendingSync>) {
+  await db.pending_syncs.update(id, patch);
+}
+
+async function syncOne(entry: PendingSync): Promise<void> {
+  const id = entry.id!;
+  const progress = { ...entry.progress, uploaded: [...entry.progress.uploaded] };
+  const { job } = entry;
+  await saveProgress(id, { status: "syncing", error: undefined });
+
+  // 1. New client first, so the invoice has a real client id.
+  let clientId = progress.clientId || job.clientId;
+  if (!clientId && job.newClient) {
+    const res = await api<{ clientId: string; client: CachedClient }>("/api/sync", {
+      method: "POST",
+      body: JSON.stringify({ action: "client", client: job.newClient, uid: job.uid ?? `local-${id}` }),
+    });
+    clientId = res.clientId;
+    progress.clientId = clientId;
+    await saveProgress(id, { progress });
+
+    // Swap the local placeholder client for the real one, and point any other
+    // queued jobs for the same new client at it so it isn't created twice.
+    if (job.localClientId) {
+      const localId = job.localClientId;
+      await db.transaction("rw", db.clients, db.pending_syncs, async () => {
+        await db.clients.delete(localId);
+        await db.clients.put(res.client);
+        const siblings = await db.pending_syncs
+          .filter((p) => p.id !== id && p.job.localClientId === localId && !p.progress.clientId)
+          .toArray();
+        for (const s of siblings) {
+          await db.pending_syncs.update(s.id!, { progress: { ...s.progress, clientId } });
+        }
+      });
+    }
+  }
+  if (!clientId) throw new Error("Job card has no client");
+
+  // 2. Draft invoice.
+  if (!progress.invoiceId) {
+    const res = await api<{ invoiceId: string; invoiceNumber: string; warnings: string[] }>("/api/sync", {
+      method: "POST",
+      body: JSON.stringify({ action: "invoice", clientId, job, uid: job.uid ?? `local-${id}` }),
+    });
+    progress.invoiceId = res.invoiceId;
+    progress.invoiceNumber = res.invoiceNumber;
+    await saveProgress(id, {
+      progress,
+      error: res.warnings?.length ? res.warnings.join("; ") : undefined,
+    });
+  }
+
+  // 3. Signature and photos, one request each.
+  const docs = documentsFor(job);
+  for (let i = 0; i < docs.length; i++) {
+    if (progress.uploaded.includes(i)) continue;
+    await api("/api/sync", {
+      method: "POST",
+      body: JSON.stringify({ action: "document", invoiceId: progress.invoiceId, ...docs[i] }),
+    });
+    progress.uploaded.push(i);
+    await saveProgress(id, { progress });
+  }
+
+  // Done: drop the heavy Base64 payload but keep a small receipt.
+  await saveProgress(id, {
+    status: "done",
+    job: { ...job, signature: job.signature ? "uploaded" : undefined, photos: [], photoLabels: [] },
+  });
+}
+
+let running: Promise<{ synced: number; failed: number }> | null = null;
+
+/** Push every queued job card to Invoice Ninja. Safe to call repeatedly. */
+export function processQueue(): Promise<{ synced: number; failed: number }> {
+  if (running) return running;
+  running = (async () => {
+    let synced = 0;
+    let failed = 0;
+    if (typeof navigator !== "undefined" && !navigator.onLine) return { synced, failed };
+    const queue = await db.pending_syncs
+      .where("status")
+      .anyOf("pending", "error", "syncing")
+      .sortBy("createdAt");
+    for (const entry of queue) {
+      try {
+        await syncOne(entry);
+        synced++;
+      } catch (err) {
+        failed++;
+        await saveProgress(entry.id!, {
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return { synced, failed };
+  })().finally(() => {
+    running = null;
+  });
+  return running;
+}
+
+/** Ask the browser not to evict our IndexedDB (saved cards only live here). */
+export async function requestPersistentStorage(): Promise<void> {
+  try {
+    if (navigator.storage?.persisted && !(await navigator.storage.persisted())) await navigator.storage.persist();
+  } catch {
+    // Not supported; nothing else to do.
+  }
+}
+
+/** Ask the service worker to wake us when connectivity returns (Chrome/Android). */
+export async function requestBackgroundSync() {
+  try {
+    const reg = await navigator.serviceWorker?.ready;
+    const sync = (reg as ServiceWorkerRegistration & { sync?: { register(tag: string): Promise<void> } })?.sync;
+    await sync?.register("job-card-sync");
+  } catch {
+    // Not supported or not permitted; the "online" listener still covers it.
+  }
+}
